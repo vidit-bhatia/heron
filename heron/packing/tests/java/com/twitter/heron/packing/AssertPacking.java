@@ -48,7 +48,7 @@ public final class AssertPacking {
     for (PackingPlan.ContainerPlan containerPlan : containerPlans) {
       if (notExpectedContainerRam != null) {
         Assert.assertNotEquals(
-            notExpectedContainerRam, (Long) containerPlan.getResource().getRam());
+            notExpectedContainerRam, (Long) containerPlan.getRequiredResource().getRam());
       }
       for (PackingPlan.InstancePlan instancePlan : containerPlan.getInstances()) {
         expectedInstanceIndecies.add(expectedInstanceIndex++);
@@ -71,14 +71,33 @@ public final class AssertPacking {
         expectedInstanceIndecies, foundInstanceIndecies);
   }
 
+  /**
+   * Verifies that the containerPlan contains a specific number of instances for the given component.
+   */
+  public static void assertNumInstances(Set<PackingPlan.ContainerPlan> containerPlans,
+                                        String component, int numInstances) {
+    int instancesFound = 0;
+    for (PackingPlan.ContainerPlan containerPlan : containerPlans) {
+      for (PackingPlan.InstancePlan instancePlan : containerPlan.getInstances()) {
+        if (instancePlan.getComponentName().equals(component)) {
+          instancesFound++;
+        }
+      }
+    }
+    Assert.assertEquals(numInstances, instancesFound);
+  }
+
+  /**
+   * Verifies that the RAM allocated for every container in a packing plan is less than a given
+   * maximum value.
+   */
   public static void assertContainerRam(Set<PackingPlan.ContainerPlan> containerPlans,
                                         long maxRamforResources) {
     for (PackingPlan.ContainerPlan containerPlan : containerPlans) {
-      long containerRam = 0;
-      for (PackingPlan.InstancePlan instancePlan : containerPlan.getInstances()) {
-        containerRam += instancePlan.getResource().getRam();
-      }
-      Assert.assertTrue(containerRam <= maxRamforResources);
+      Assert.assertTrue(String.format("Container with id: %d requires more RAM (%d) than"
+              + " the maximum RAM allowed (%d)", containerPlan.getId(),
+          containerPlan.getRequiredResource().getRam(), maxRamforResources),
+          containerPlan.getRequiredResource().getRam() <= maxRamforResources);
     }
   }
 }

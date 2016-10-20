@@ -15,7 +15,9 @@
 package com.twitter.heron.spi.utils;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.Assert;
 import org.junit.Test;
@@ -27,7 +29,12 @@ import org.powermock.modules.junit4.PowerMockRunner;
 
 import com.twitter.heron.common.basics.FileUtils;
 import com.twitter.heron.proto.system.Common;
+import com.twitter.heron.proto.system.PackingPlans;
 import com.twitter.heron.spi.common.Config;
+import com.twitter.heron.spi.packing.PackingPlan;
+import com.twitter.heron.spi.statemgr.SchedulerStateManagerAdaptor;
+
+import static org.mockito.Mockito.eq;
 
 @RunWith(PowerMockRunner.class)
 @PrepareForTest({FileUtils.class, ShellUtils.class, SchedulerUtils.class})
@@ -37,6 +44,7 @@ public class SchedulerUtilsTest {
   private static final String CORE_RELEASE_DEST = "core";
   private static final String TOPOLOGY_URI = "mock://uri:121/ruo#xi";
   private static final String TOPOLOGY_DEST = "topology";
+  private static final String TOPOLOGY_NAME = "topology_name";
   private static final boolean IS_DELETE_PACKAGE = true;
   private static final boolean IS_VERBOSE = true;
 
@@ -167,5 +175,20 @@ public class SchedulerUtilsTest {
             "--topology_bin", null, "--http_port", "1"};
     Assert.assertArrayEquals(expectedArgs, SchedulerUtils.schedulerCommandArgs(
         Mockito.mock(Config.class), Mockito.mock(Config.class), freePorts));
+  }
+
+  @Test
+  public void persistUpdatedPackingPlanWillUpdatesStateManager() {
+    SchedulerStateManagerAdaptor adaptor = Mockito.mock(SchedulerStateManagerAdaptor.class);
+    Mockito.when(adaptor
+        .updatePackingPlan(Mockito.any(PackingPlans.PackingPlan.class), eq(TOPOLOGY_NAME)))
+        .thenReturn(true);
+
+    Set<PackingPlan.ContainerPlan> containers = new HashSet<>();
+    containers.add(PackingTestUtils.testContainerPlan(1, 0, 1, 2));
+    PackingPlan packing = new PackingPlan("id", containers);
+    SchedulerUtils.persistUpdatedPackingPlan(TOPOLOGY_NAME, packing, adaptor);
+    Mockito.verify(adaptor)
+        .updatePackingPlan(Mockito.any(PackingPlans.PackingPlan.class), eq(TOPOLOGY_NAME));
   }
 }

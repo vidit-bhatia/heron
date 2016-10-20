@@ -29,6 +29,7 @@ import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.api.BackgroundCallback;
 import org.apache.curator.framework.api.CuratorEvent;
+import org.apache.curator.framework.recipes.locks.InterProcessSemaphoreMutex;
 import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.Watcher;
@@ -43,7 +44,9 @@ import com.twitter.heron.proto.tmaster.TopologyMaster;
 import com.twitter.heron.spi.common.Config;
 import com.twitter.heron.spi.common.Context;
 import com.twitter.heron.spi.common.Keys;
+import com.twitter.heron.spi.statemgr.Lock;
 import com.twitter.heron.spi.statemgr.WatchCallback;
+import com.twitter.heron.spi.utils.NetworkUtils;
 import com.twitter.heron.statemgr.FileSystemStateManager;
 import com.twitter.heron.statemgr.zookeeper.ZkContext;
 import com.twitter.heron.statemgr.zookeeper.ZkUtils;
@@ -66,13 +69,16 @@ public class CuratorStateManager extends FileSystemStateManager {
     this.isSchedulerService = Context.schedulerService(newConfig);
     this.tunnelProcesses = new ArrayList<>();
 
-    boolean isTunnelWhenNeeded = ZkContext.isTunnelNeeded(newConfig);
-    if (isTunnelWhenNeeded) {
-      Pair<String, List<Process>> tunneledResults = setupZkTunnel();
+    NetworkUtils.TunnelConfig tunnelConfig =
+        NetworkUtils.TunnelConfig.build(config, NetworkUtils.HeronSystem.STATE_MANAGER);
+
+    if (tunnelConfig.isTunnelNeeded()) {
+      Pair<String, List<Process>> tunneledResults = setupZkTunnel(tunnelConfig);
 
       String newConnectionString = tunneledResults.first;
       if (newConnectionString.isEmpty()) {
-        throw new IllegalArgumentException("Bad connectionString: " + connectionString);
+        throw new IllegalArgumentException("Cannot connect to tunnelHost: "
+            + tunnelConfig.getTunnelHost() + " Bad connectionString: " + connectionString);
       }
 
       // Use the new connection string
@@ -99,6 +105,43 @@ public class CuratorStateManager extends FileSystemStateManager {
     }
   }
 
+  /**
+   * Lock backed by {@code InterProcessSemaphoreMutex}. Guaranteed to atomically get a
+   * distributed ephemeral lock backed by zookeeper. The lock should be explicitly released to
+   * avoid unnecessary waiting by other threads waiting on it.
+   */
+  private final class DistributedLock implements Lock {
+    private String path;
+    private InterProcessSemaphoreMutex lock;
+
+    private DistributedLock(CuratorFramework client, String path) {
+      this.path = path;
+      this.lock = new InterProcessSemaphoreMutex(client, path);
+    }
+
+    @Override
+    public boolean tryLock(long timeout, TimeUnit unit) throws InterruptedException {
+      try {
+        return this.lock.acquire(timeout, unit);
+      } catch (InterruptedException e) {
+        throw e;
+        // SUPPRESS CHECKSTYLE IllegalCatch
+      } catch (Exception e) {
+        throw new RuntimeException("Error while trying to acquire distributed lock at " + path, e);
+      }
+    }
+
+    @Override
+    public void unlock() {
+      try {
+        this.lock.release();
+        // SUPPRESS CHECKSTYLE IllegalCatch
+      } catch (Exception e) {
+        throw new RuntimeException("Error while trying to release distributed lock at " + path, e);
+      }
+    }
+  }
+
   protected CuratorFramework getCuratorClient() {
     // these are reasonable arguments for the ExponentialBackoffRetry. The first
     // retry will wait 1 second - the second will wait up to 2 seconds - the
@@ -118,8 +161,8 @@ public class CuratorStateManager extends FileSystemStateManager {
         .build();
   }
 
-  protected Pair<String, List<Process>> setupZkTunnel() {
-    return ZkUtils.setupZkTunnel(config);
+  protected Pair<String, List<Process>> setupZkTunnel(NetworkUtils.TunnelConfig tunnelConfig) {
+    return ZkUtils.setupZkTunnel(config, tunnelConfig);
   }
 
   protected void initTree() {
@@ -259,6 +302,12 @@ public class CuratorStateManager extends FileSystemStateManager {
     }
 
     return future;
+  }
+
+  @Override
+  public Lock getLock(String topologyName, String lockName) {
+    return new DistributedLock(this.client,
+        StateLocation.LOCKS.getNodePath(this.rootAddress, topologyName, lockName));
   }
 
   @Override

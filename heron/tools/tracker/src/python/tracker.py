@@ -349,8 +349,10 @@ class Tracker(object):
                                      indent=2),
                 'raw' : utils.hex_escape(kvs.serialized_value)}
           except Exception:
+            Log.exception("Failed to parse data as java object")
             physicalPlan["config"][kvs.key] = {
-                'value' : 'A Java Object',
+                # The value should be a valid json object
+                'value' : '{}',
                 'raw' : utils.hex_escape(kvs.serialized_value)}
     for spout in spouts:
       spout_name = spout.comp.name

@@ -35,10 +35,10 @@ import com.twitter.heron.spi.packing.PackingPlan;
 import com.twitter.heron.spi.packing.PackingPlanProtoDeserializer;
 import com.twitter.heron.spi.packing.PackingPlanProtoSerializer;
 import com.twitter.heron.spi.statemgr.SchedulerStateManagerAdaptor;
+import com.twitter.heron.spi.utils.NetworkUtils;
 import com.twitter.heron.spi.utils.ReflectionUtils;
 import com.twitter.heron.spi.utils.Runtime;
 import com.twitter.heron.spi.utils.TMasterUtils;
-
 
 public class RuntimeManagerRunner implements Callable<Boolean> {
   static final String NEW_COMPONENT_PARALLELISM_KEY = "NEW_COMPONENT_PARALLELISM";
@@ -91,18 +91,22 @@ public class RuntimeManagerRunner implements Callable<Boolean> {
    * Handler to activate a topology
    */
   private boolean activateTopologyHandler(String topologyName) {
-    return TMasterUtils.transitionTopologyState(
-        topologyName, "activat", Runtime.schedulerStateManagerAdaptor(runtime),
-        TopologyAPI.TopologyState.PAUSED, TopologyAPI.TopologyState.RUNNING);
+    NetworkUtils.TunnelConfig tunnelConfig =
+        NetworkUtils.TunnelConfig.build(config, NetworkUtils.HeronSystem.SCHEDULER);
+    return TMasterUtils.transitionTopologyState(topologyName,
+        TMasterUtils.TMasterCommand.ACTIVATE, Runtime.schedulerStateManagerAdaptor(runtime),
+        TopologyAPI.TopologyState.PAUSED, TopologyAPI.TopologyState.RUNNING, tunnelConfig);
   }
 
   /**
    * Handler to deactivate a topology
    */
   private boolean deactivateTopologyHandler(String topologyName) {
-    return TMasterUtils.transitionTopologyState(
-        topologyName, "deactivat", Runtime.schedulerStateManagerAdaptor(runtime),
-        TopologyAPI.TopologyState.RUNNING, TopologyAPI.TopologyState.PAUSED);
+    NetworkUtils.TunnelConfig tunnelConfig =
+        NetworkUtils.TunnelConfig.build(config, NetworkUtils.HeronSystem.SCHEDULER);
+    return TMasterUtils.transitionTopologyState(topologyName,
+        TMasterUtils.TMasterCommand.DEACTIVATE, Runtime.schedulerStateManagerAdaptor(runtime),
+        TopologyAPI.TopologyState.RUNNING, TopologyAPI.TopologyState.PAUSED, tunnelConfig);
   }
 
   /**
@@ -174,6 +178,13 @@ public class RuntimeManagerRunner implements Callable<Boolean> {
     TopologyAPI.Topology topology = manager.getTopology(topologyName);
     Map<String, Integer> changeRequests = parseNewParallelismParam(newParallelism);
     PackingPlans.PackingPlan currentPlan = manager.getPackingPlan(topologyName);
+
+    if (!changeDetected(currentPlan, changeRequests)) {
+      LOG.warning(String.format("The component parallelism request (%s) is the same as the "
+          + "current topology parallelism. Not taking action.", newParallelism));
+      return false;
+    }
+
     PackingPlans.PackingPlan proposedPlan = buildNewPackingPlan(currentPlan, changeRequests,
         topology);
 
@@ -258,14 +269,6 @@ public class RuntimeManagerRunner implements Callable<Boolean> {
     Map<String, Integer> componentCounts = currentPackingPlan.getComponentCounts();
     Map<String, Integer> componentChanges = parallelismDelta(componentCounts, changeRequests);
 
-    for (String componentName : componentChanges.keySet()) {
-      Integer change = componentChanges.get(componentName);
-      if (change < 0) {
-        throw new IllegalArgumentException(String.format(
-            "Request made to change component %s parallelism by %d. Scaling component "
-                + "parallelism down is not currently supported.", componentName, change));
-      }
-    }
     // Create an instance of the packing class
     String repackingClass = Context.repackingClass(config);
     IRepacking packing;
@@ -319,5 +322,17 @@ public class RuntimeManagerRunner implements Callable<Boolean> {
           + "<component>:<parallelism>[,<component>:<parallelism>], Found: " + newParallelism);
     }
     return changes;
+  }
+
+  private boolean changeDetected(PackingPlans.PackingPlan currentProtoPlan,
+                                 Map<String, Integer> changeRequests) {
+    PackingPlanProtoDeserializer deserializer = new PackingPlanProtoDeserializer();
+    PackingPlan currentPlan = deserializer.fromProto(currentProtoPlan);
+    for (String component : changeRequests.keySet()) {
+      if (changeRequests.get(component) != currentPlan.getComponentCounts().get(component)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

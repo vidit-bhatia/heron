@@ -39,7 +39,6 @@ import com.twitter.heron.spi.common.Config;
 import com.twitter.heron.spi.packing.PackingPlan;
 import com.twitter.heron.spi.scheduler.IScalable;
 import com.twitter.heron.spi.scheduler.IScheduler;
-import com.twitter.heron.spi.utils.Runtime;
 import com.twitter.heron.spi.utils.SchedulerUtils;
 import com.twitter.heron.spi.utils.ShellUtils;
 
@@ -59,7 +58,8 @@ public class LocalScheduler implements IScheduler, IScalable {
   public void initialize(Config mConfig, Config mRuntime) {
     this.config = mConfig;
     this.runtime = mRuntime;
-    this.updateTopologyManager = new UpdateTopologyManager(runtime, Optional.<IScalable>of(this));
+    this.updateTopologyManager =
+        new UpdateTopologyManager(config, runtime, Optional.<IScalable>of(this));
   }
 
   @Override
@@ -69,6 +69,10 @@ public class LocalScheduler implements IScheduler, IScalable {
 
     // Clear the map
     processToContainer.clear();
+
+    if (updateTopologyManager != null) {
+      updateTopologyManager.close();
+    }
   }
 
   /**
@@ -76,7 +80,7 @@ public class LocalScheduler implements IScheduler, IScalable {
    */
   @VisibleForTesting
   protected Process startExecutorProcess(int container) {
-    return ShellUtils.runASyncProcess(true,
+    return ShellUtils.runASyncProcess(
         getExecutorCommand(container),
         new File(LocalContext.workingDirectory(config)),
         Integer.toString(container));
@@ -127,7 +131,9 @@ public class LocalScheduler implements IScheduler, IScalable {
           // restart the container
           startExecutor(processToContainer.remove(containerExecutor));
         } catch (InterruptedException e) {
-          LOG.log(Level.SEVERE, "Process is interrupted: ", e);
+          if (!isTopologyKilled) {
+            LOG.log(Level.SEVERE, "Process is interrupted: ", e);
+          }
         }
       }
     };
@@ -152,15 +158,15 @@ public class LocalScheduler implements IScheduler, IScalable {
    */
   @Override
   public boolean onSchedule(PackingPlan packing) {
-    long numContainers = Runtime.numContainers(runtime);
-
     LOG.info("Starting to deploy topology: " + LocalContext.topologyName(config));
-    LOG.info("# of containers: " + numContainers);
 
     synchronized (processToContainer) {
+      LOG.info("Starting executor for TMaster");
+      startExecutor(0);
+
       // for each container, run its own executor
-      for (int i = 0; i < numContainers; i++) {
-        startExecutor(i);
+      for (PackingPlan.ContainerPlan container : packing.getContainers()) {
+        startExecutor(container.getId());
       }
     }
 
@@ -260,13 +266,12 @@ public class LocalScheduler implements IScheduler, IScalable {
   @Override
   public void addContainers(Set<PackingPlan.ContainerPlan> containers) {
     synchronized (processToContainer) {
-      int activeContainerCount = processToContainer.size();
-
-      for (int i = 0; i < containers.size(); i++) {
-        // if number of active container is 2, then there is 1 TMaster container (id=0) and 1 worker
-        // (id = 1). Then the next container to be added will have id = 2, same as current container
-        // count
-        startExecutor(activeContainerCount + i);
+      for (PackingPlan.ContainerPlan container : containers) {
+        if (processToContainer.values().contains(container.getId())) {
+          throw new RuntimeException(String.format("Found active container for %s, "
+              + "cannot launch a duplicate container.", container.getId()));
+        }
+        startExecutor(container.getId());
       }
     }
   }

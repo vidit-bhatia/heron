@@ -14,7 +14,6 @@
 
 package com.twitter.heron.scheduler.aurora;
 
-import java.io.File;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -58,7 +57,7 @@ public class AuroraScheduler implements IScheduler, IScalable {
     this.runtime = mRuntime;
     this.controller = getController();
     this.updateTopologyManager =
-        new UpdateTopologyManager(runtime, Optional.<IScalable>of(this));
+        new UpdateTopologyManager(config, runtime, Optional.<IScalable>of(this));
   }
 
   /**
@@ -77,7 +76,9 @@ public class AuroraScheduler implements IScheduler, IScalable {
 
   @Override
   public void close() {
-    // Nothing to do here
+    if (updateTopologyManager != null) {
+      updateTopologyManager.close();
+    }
   }
 
   @Override
@@ -89,9 +90,14 @@ public class AuroraScheduler implements IScheduler, IScalable {
 
     LOG.info("Launching topology in aurora");
 
-    Map<String, String> auroraProperties = createAuroraProperties(packing);
+    // Align the cpu, ram, disk to the maximal one
+    PackingPlan updatedPackingPlan = packing.cloneWithHomogeneousScheduledResource();
+    SchedulerUtils.persistUpdatedPackingPlan(Runtime.topologyName(runtime), updatedPackingPlan,
+        Runtime.schedulerStateManagerAdaptor(runtime));
 
-    return controller.createJob(getHeronAuroraPath(), auroraProperties);
+    Map<String, String> auroraProperties = createAuroraProperties(updatedPackingPlan);
+
+    return controller.createJob(AuroraContext.getHeronAuroraPath(config), auroraProperties);
   }
 
   @Override
@@ -153,17 +159,11 @@ public class AuroraScheduler implements IScheduler, IScalable {
     return String.format("\"%s\"", javaOptsBase64.replace("=", "&equals;"));
   }
 
-  protected String getHeronAuroraPath() {
-    return new File(Context.heronConf(config), "heron.aurora").getPath();
-  }
-
   protected Map<String, String> createAuroraProperties(PackingPlan packing) {
     Map<String, String> auroraProperties = new HashMap<>();
 
     TopologyAPI.Topology topology = Runtime.topology(runtime);
-
-    // Align the cpu, ram, disk to the maximal one
-    Resource containerResource = SchedulerUtils.getMaxRequiredResource(packing);
+    Resource containerResource = packing.getContainers().iterator().next().getRequiredResource();
 
     auroraProperties.put("SANDBOX_EXECUTOR_BINARY", Context.executorSandboxBinary(config));
     auroraProperties.put("TOPOLOGY_NAME", topology.getName());

@@ -82,13 +82,36 @@ public final class ShellUtils {
   }
 
   /**
+   * Start a daemon thread to read data from "input" to "out".
+   */
+  private static Thread asyncProcessStream(final InputStream input, final StringBuilder out) {
+    Thread thread = new Thread() {
+      @Override
+      public void run() {
+        try {
+          out.append(inputstreamToString(input));
+        } finally {
+          try {
+            input.close();
+          } catch (IOException e) {
+            LOG.log(Level.WARNING, "Failed to close the input stream", e);
+          }
+        }
+      }
+    };
+    thread.setDaemon(true);
+    thread.start();
+    return thread;
+  }
+
+  /**
    * run sync process
    */
   public static int runSyncProcess(
       boolean verbose, boolean isInheritIO, String[] cmdline, StringBuilder stdout,
       StringBuilder stderr, File workingDirectory, Map<String, String> envs) {
-    StringBuilder pStdOut = stdout;
-    StringBuilder pStdErr = stderr;
+    final StringBuilder pStdOut = stdout == null ? new StringBuilder() : stdout;
+    final StringBuilder pStdErr = stderr == null ? new StringBuilder() : stderr;
 
     // Log the command for debugging
     LOG.log(Level.FINE, "Process command: `$ {0}`", Arrays.toString(cmdline));
@@ -98,27 +121,36 @@ public final class ShellUtils {
     try {
       process = pb.start();
     } catch (IOException e) {
-      LOG.severe("Failed to run Sync Process " + e);
+      LOG.log(Level.SEVERE, "Failed to run Sync Process ", e);
       return -1;
     }
+
+    // Launching threads to consume stdout and stderr before "waitFor". Otherwise, output from the
+    // "process" can exhaust the available buffer for the output or error stream because neither
+    // stream is read while waiting for the process to complete. If either buffer becomes full, it
+    // can block the "process" as well, preventing all progress for both the "process" and the
+    // current thread.
+    Thread stdoutThread = asyncProcessStream(process.getInputStream(), pStdOut);
+    Thread stderrThread = asyncProcessStream(process.getErrorStream(), pStdErr);
 
     int exitValue;
 
     try {
       exitValue = process.waitFor();
+      // Make sure `pStdOut` and `pStdErr` get the buffered data
+      stdoutThread.join();
+      stderrThread.join();
     } catch (InterruptedException e) {
-      LOG.severe("Failed to check status of packer " + e);
+      // The current thread is interrupted, so try to interrupt reading threads and kill
+      // the process to return quickly.
+      stdoutThread.interrupt();
+      stderrThread.interrupt();
+      process.destroy();
+      LOG.log(Level.SEVERE, "Running Sync Process was interrupted", e);
+      // Reset the interrupt status to allow other codes noticing it.
+      Thread.currentThread().interrupt();
       return -1;
     }
-
-    if (pStdOut == null) {
-      pStdOut = new StringBuilder();
-    }
-    if (pStdErr == null) {
-      pStdErr = new StringBuilder();
-    }
-    pStdOut.append(inputstreamToString(process.getInputStream()));
-    pStdErr.append(inputstreamToString(process.getErrorStream()));
 
     String stdoutString = pStdOut.toString();
     String stderrString = pStdErr.toString();
@@ -134,28 +166,28 @@ public final class ShellUtils {
   }
 
   public static Process runASyncProcess(
-      boolean verbose, String command, File workingDirectory) {
-    return runASyncProcess(verbose, splitTokens(command), workingDirectory);
-  }
-
-  public static Process runASyncProcess(
-      boolean verbose, String[] command, File workingDirectory, String logFileUuid) {
-    return runASyncProcess(command, workingDirectory, new HashMap<String, String>(), logFileUuid);
+      String[] command, File workingDirectory, String logFileUuid) {
+    return runASyncProcess(
+        command, workingDirectory, new HashMap<String, String>(), logFileUuid, true);
   }
 
   public static Process runASyncProcess(
       boolean verbose, String[] command, File workingDirectory) {
-    return runASyncProcess(verbose, command, workingDirectory, new HashMap<String, String>());
+    return runASyncProcess(command, workingDirectory, new HashMap<String, String>(), null, true);
   }
 
   public static Process runASyncProcess(
       boolean verbose, String[] command, File workingDirectory, Map<String, String> envs) {
-    return runASyncProcess(command, workingDirectory, envs, null);
+    return runASyncProcess(command, workingDirectory, envs, null, true);
+  }
+
+  public static Process runASyncProcess(String command) {
+    return runASyncProcess(splitTokens(command), new File("."),
+        new HashMap<String, String>(), null, false);
   }
 
   private static Process runASyncProcess(String[] command, File workingDirectory,
-      Map<String, String> envs, String logFileUuid) {
-    // Log the command for debugging
+      Map<String, String> envs, String logFileUuid, boolean logStderr) {
     LOG.log(Level.FINE, "$> {0}", Arrays.toString(command));
 
     // the log file can help people to find out what happened between pb.start()
@@ -165,9 +197,6 @@ public final class ShellUtils {
     if (uuid == null) {
       uuid = UUID.randomUUID().toString().substring(0, 8) + "-started";
     }
-    String logFilePath = String.format("%s/%s-%s.stderr",
-        workingDirectory, commandFileName, uuid);
-    File logFile = new File(logFilePath);
 
     // For AsyncProcess, we will never inherit IO, since parent process will not
     // be guaranteed alive when children processing trying to flush to
@@ -175,13 +204,17 @@ public final class ShellUtils {
     ProcessBuilder pb = getProcessBuilder(false, command, workingDirectory, envs);
     pb.redirectErrorStream();
 
-    pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
+    if (logStderr) {
+      String logFilePath = String.format("%s/%s-%s.stderr",
+          workingDirectory, commandFileName, uuid);
+      pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(logFilePath)));
+    }
 
     Process process = null;
     try {
       process = pb.start();
     } catch (IOException e) {
-      LOG.severe("Failed to run Async Process " + e);
+      LOG.log(Level.SEVERE, "Failed to run Async Process ", e);
     }
 
     return process;
@@ -218,19 +251,20 @@ public final class ShellUtils {
     return pb;
   }
 
-  public static Process establishSSHTunnelProcess(
-      String tunnelHost, int tunnelPort, String destHost, int destPort, boolean verbose) {
+  static Process establishSSHTunnelProcess(
+      String tunnelHost, int tunnelPort, String destHost, int destPort) {
     if (destHost == null
         || destHost.isEmpty()
         || "localhost".equals(destHost)
         || "127.0.0.1".equals(destHost)) {
       throw new RuntimeException("Trying to open tunnel to localhost.");
     }
-    return ShellUtils.runASyncProcess(verbose,
-        new String[]{
-            "ssh", String.format("-NL%d:%s:%d", tunnelPort, destHost, destPort), tunnelHost},
-        new File(".")
-    );
+    return ShellUtils.runASyncProcess(
+        String.format("ssh -NL%d:%s:%d %s", tunnelPort, destHost, destPort, tunnelHost));
+  }
+
+  static Process establishSocksProxyProcess(String proxyHost, int proxyPort) {
+    return ShellUtils.runASyncProcess(String.format("ssh -ND %d %s", proxyPort, proxyHost));
   }
 
   /**

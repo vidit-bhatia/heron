@@ -16,7 +16,9 @@ package com.twitter.heron.spi.utils;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -58,6 +60,32 @@ public class ShellUtilsTest {
     Assert.assertTrue(stderr.toString().trim().isEmpty());
   }
 
+  @Test(timeout = 60000)
+  public void testLargeOutput() throws IOException, InterruptedException {
+    File testScript = File.createTempFile("foo-", ".sh");
+    try {
+      // A command that fulfills the output buffers.
+      String command = "printf '.%.0s' {1..1000000}\nprintf '.%.0s' {1..1000000} >&2";
+      FileOutputStream input = new FileOutputStream(testScript);
+      try {
+        input.write(command.getBytes(StandardCharsets.UTF_8));
+      } finally {
+        input.close();
+      }
+      Assert.assertTrue("Cannot make the test script executable", testScript.setExecutable(true));
+      StringBuilder stdout = new StringBuilder();
+      StringBuilder stderr = new StringBuilder();
+      Assert.assertEquals(0,
+          ShellUtils.runProcess(true,
+              "/bin/bash -c " + testScript.getAbsolutePath(), stdout, stderr));
+      // Only checks stdout and stderr are not empty. Correctness is checked in "testRunProcess".
+      Assert.assertTrue(!stdout.toString().trim().isEmpty());
+      Assert.assertTrue(!stderr.toString().trim().isEmpty());
+    } finally {
+      testScript.delete();
+    }
+  }
+
   @Test
   public void testRunAsyncProcess() throws IOException {
     String testString = "testString";
@@ -65,7 +93,7 @@ public class ShellUtilsTest {
     StringBuilder stderr = new StringBuilder();
     // Sleep 1 second and echo some text.
     Process p = ShellUtils.runASyncProcess(
-        true, String.format("sleep 1 && echo %s", testString), new File("."));
+        String.format("sleep 1 && echo %s", testString));
     // Test process is running and input stream is empty
     wait(10, TimeUnit.MILLISECONDS);
     Assert.assertEquals(0, p.getInputStream().available());
