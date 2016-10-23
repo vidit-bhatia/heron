@@ -1,6 +1,0 @@
-cc_library(
-    name = "component-cxx",
-    srcs = ["BaseComponent.cpp"],
-    hdrs = ["BaseComponent.h"],
-    visibility = ["//heron/cppheron/src/cpp/component:public"],
-)

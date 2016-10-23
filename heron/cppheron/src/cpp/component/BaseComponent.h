@@ -20,7 +20,10 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-#include <IComponent.h>
-class BaseComponent:public IComponent{
-
-}
+#include "IComponent.h"
+#include <unordered_map>
+#include <string>
+class BaseComponent:public IComponent {
+ public:
+    std::unordered_map<std::string, std::string> getComponentConfiguration();
+};

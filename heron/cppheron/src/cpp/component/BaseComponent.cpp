@@ -22,7 +22,8 @@
 
 #include "BaseComponent.h"
 #include <unordered_map>
-
-std::unordered_map<std::string,std::string> BaseComponent::getComponentConfiguration(){
-	return NULL;
+#include <string>
+std::unordered_map<std::string, std::string> BaseComponent::getComponentConfiguration() {
+    std::unordered_map<std::string, std::string> map;
+    return map;
 }

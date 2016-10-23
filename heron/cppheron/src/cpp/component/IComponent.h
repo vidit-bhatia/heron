@@ -22,10 +22,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #include <unordered_map>
+#include <string>
 class IComponent {
-	// TODO(vidit-bhatia) : declareOutputFields(OutputFieldsDeclarer)
-	//will be done when we define OutPutFieldsDeclarer. 
-	virtual void declareOutputFields()=0;
-	//TODO(vidit-bhatia) : can we change the map with generic type
-	virtual std::unordered_map<std::string,std::string> getComponentConfiguration()=0;
-}
+ public:
+    // TODO(vidit-bhatia) : declareOutputFields(OutputFieldsDeclarer)
+    // will be done when we define OutPutFieldsDeclarer.
+    virtual void declareOutputFields() = 0;
+    // TODO(vidit-bhatia) : can we change the map with generic type
+    virtual std::unordered_map<std::string, std::string> getComponentConfiguration() = 0;
+};
